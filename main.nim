@@ -1,7 +1,9 @@
-import std/[strutils, os]
+import std/[algorithm, strformat, sequtils, strutils, random, json, os]
 
+import downit
 import imstyle
 import niprefs
+import openurl
 import nimgl/[opengl, glfw]
 import nimgl/imgui, nimgl/imgui/[impl_opengl, impl_glfw]
 
@@ -41,7 +43,7 @@ proc drawAboutModal(app: App) =
       igSetTooltip(cstring app.config["website"].getString() & " " & FA_ExternalLink)
       
       if igIsMouseClicked(ImGuiMouseButton.Left):
-        app.config["website"].getString().openURL()
+        app.config["website"].getString().openUrl()
 
     igSameLine()
     
@@ -111,6 +113,205 @@ proc drawMainMenuBar(app: var App) =
   app.drawAboutModal()
   app.drawPrefsModal()
 
+proc getFeed(app: App, tags = @["installed"] & app.pkgsTags): seq[Package] = 
+  result = app.feed
+  # Filter feed
+  # By tags/installed
+  if app.tags.len > 0:
+    for tag in app.tags:
+      if tag in tags:
+        result = result.filterIt(tag in it.tags)
+      elif tag == "installed":
+        result = result.filterIt(it.name in app.installedPkgs)
+      else: raise newException(ValueError, &"Invalid tag {tag}")
+  
+  # Sort feed
+  case app.currentSort
+  of 0: # Alpha asc
+    result = result.sortedByIt(it.name)
+  of 1: # Alpha desc
+    result = result.sortedByIt(it.name)
+    result.reverse()
+  else: raise newException(ValueError, "Invalid sort value " & $app.currentSort)
+
+proc drawTags(app: var App, tags: seq[string], addBtnRight = false): bool {.discardable.} = 
+  let style = igGetStyle()
+  let drawlist = igGetWindowDrawList()
+  
+  if not addBtnRight:
+    if igButton(FA_Plus): igOpenPopup("addFilter")
+    if tags.len > 0: igDummy(igVec2(style.itemSpacing.x, 0)); igSameLine()
+  elif tags.len > 0:
+    igSameLine(0, style.itemSpacing.x)
+
+  for e, filter in app.tags.deepCopy():
+    drawList.channelsSplit(2)
+
+    drawList.channelsSetCurrent(1)
+    igAlignTextToFramePadding()
+    igText(cstring filter.capitalizeAscii())
+    
+    drawList.channelsSetCurrent(0)
+    drawlist.addRectFilled(igGetItemRectMin() - style.framePadding, igGetItemRectMax() + style.framePadding, igGetColorU32(ImGuiCol.Tab))
+
+    drawList.channelsMerge()
+
+    igSameLine()
+    igPushStyleVar(FrameRounding, 0f)
+    igPushStyleColor(ImGuiCol.Button, igGetColorU32(ImGuiCol.Tab))
+    igPushStyleColor(ImGuiCol.ButtonHovered, igGetColorU32(ImGuiCol.TabHovered))
+    igPushStyleColor(ImGuiCol.ButtonActive, igGetColorU32(ImGuiCol.TabActive))
+
+    if igButton(cstring &"{FA_Times}##{e}"):
+      result = true
+      app.tags.delete(app.tags.find(filter))
+
+    igPopStyleColor(3)
+    igPopStyleVar()
+
+    let lastButton = igGetItemRectMax().x
+    # Expected position if next button was on same line
+    let nextButton = lastButton + 0.5 + 
+      (if e < app.tags.high: igCalcFrameSize(app.tags[e+1].capitalizeAscii()).x + style.itemSpacing.x + igCalcFrameSize(FA_Times).x + 
+      (if addBtnRight: igCalcFrameSize(FA_Plus).x + style.itemSpacing.x else: 0) 
+      else: 0)
+    
+    if e < app.tags.high:
+      if nextButton < igGetWindowPos().x + igGetWindowContentRegionMax().x:
+        igSameLine(0, style.itemSpacing.x * 2)
+      else:
+        igDummy(igVec2(style.itemSpacing.x, 0)); igSameLine()
+
+  if addBtnRight:
+    if tags.len > 0: igSameLine()
+    if igButton(FA_Plus): igOpenPopup("addFilter")
+
+  if igBeginPopup("addFilter"):
+    igInputTextWithHint("##tagsFilter", "Search tags", cstring app.tagsBuffer, 64)
+
+    for e, tag in tags:
+      if tag notin app.tags and app.tagsBuffer.passFilter(tag):
+        if igMenuItem(cstring tag.capitalizeAscii()):
+          result = true
+          app.tags.add(tag)
+
+    igEndPopup()
+
+proc drawPkgsListHeader(app: var App) = 
+  igInputTextWithHint("##search", "Search...", cstring app.searchBuffer, 64); igSameLine()
+
+  if igButton(FA_Sort):
+    igOpenPopup("sort")
+  igSameLine()
+
+  app.drawTags(@["installed"] & app.pkgsTags)
+
+  if igBeginPopup("sort"):
+    for e, ele in [FA_SortAlphaAsc, FA_SortAlphaDesc, "Newest", "Oldest"]:
+      if igSelectable(cstring ele, e == app.currentSort):
+        app.currentSort = e
+
+    igEndPopup()
+
+proc drawPkgsList(app: var App) = 
+  let style = igGetStyle()
+  let feed = app.feed[0..10]##app.getFeed()[0..100]
+
+  for e, pkg in feed:
+    if not app.searchBuffer.passFilter(pkg.name) or not igIsRectVisible(igVec2(0, igGetFrameHeight() + app.strongFont.fontSize + (style.framePadding.y * 2))):
+      continue
+
+    let installed = pkg.name in app.installedPkgs
+    let installText = if installed: FA_Download else: FA_Times
+    let selected = pkg.name == app.currentPkg.name
+    if igSelectable(cstring &"##{e}", selected, size = igVec2(0, igGetFrameHeight() + app.strongFont.fontSize + (style.framePadding.y * 2)), flags = ImGuiSelectableFlags.AllowItemOverlap):
+      app.currentPkg = feed[e]
+
+    igSameLine(); igBeginGroup()
+    app.strongFont.igPushFont()
+    igText(cstring pkg.name)
+    igPopFont()
+    
+    igTextWithEllipsis(
+      if pkg.description.len > 0: pkg.description else: "No description.", 
+      maxWidth = igGetContentRegionAvail().x - (style.itemSpacing.x + igCalcFrameSize(installText).x)
+    )
+    igSameLine(); igCenterCursorX(igCalcFrameSize(installText).x, align = 1)
+    
+    if igButton(cstring &"{installText}##{e}"):
+      if installed:
+        app.installedPkgs.delete(app.installedPkgs.find(pkg.name))
+      else:
+        app.installedPkgs.add(pkg.name)
+
+    igEndGroup()
+
+proc drawPkgs(app: var App) = 
+  app.downloader.update()
+
+  if not app.downloader.exists("packages"):
+    app.downloader.request("https://github.com/nim-lang/packages/blob/master/packages.json?raw=true", "packages")
+  elif app.downloader.succeed("packages") and app.feed.len == 0:
+    for pkg in app.downloader.getBody("packages").get().parseJson():
+      if "alias" in pkg: continue
+      
+      for tag in pkg["tags"]:
+        if tag.getStr() notin app.pkgsTags:
+          app.pkgsTags.add(tag.getStr())
+
+      app.feed.add(pkg.to(Package))
+
+    randomize()
+    app.currentPkg = app.feed[rand(app.feed.high)]
+
+  let avail = igGetContentRegionAvail()
+
+  # Keep splitter proportions on resize
+  # And hide the editing zone when not editing
+  if app.prevAvail != igVec2(0, 0) and app.prevAvail != avail:
+    app.listSplitterSize = ((app.listSplitterSize.a / app.prevAvail.x) * avail.x, (app.listSplitterSize.b / app.prevAvail.x) * avail.x)
+
+  app.prevAvail = avail
+
+  # First time
+  if app.listSplitterSize.a == 0:
+    app.listSplitterSize = (avail.x * 0.2f, avail.x * 0.8f)
+
+  if app.downloader.succeed("packages"):
+    igSplitter(true, 8, app.listSplitterSize.a.addr, app.listSplitterSize.b.addr, 200, 800, avail.y)
+    # List
+    if igBeginChild("##pkgsList", igVec2(app.listSplitterSize.a, avail.y), flags = makeFlags(AlwaysUseWindowPadding)):
+      app.drawPkgsListHeader()
+      igSeparator()
+      app.drawPkgsList()
+
+    igEndChild(); igSameLine()
+    # app.drawPkgPreview()
+
+  elif app.downloader.running("packages"):
+    igCenterCursor(ImVec2(x: 15 * 2, y: (15 + igGetStyle().framePadding.y) * 2))
+    igSpinner("##spinner", 15, 6, igGetColorU32(ButtonHovered))
+
+  elif (let errorMsg = app.downloader.getErrorMsg("packages"); errorMsg.isSome):
+    let text = "Error fetching packages list: \n" & errorMsg.get().splitLines()[0] & "\n"
+
+    igCenterCursorX(igCalcTextSize(cstring text).x)
+    igCenterCursorY(igGetFrameHeight() + igCalcTextSize(cstring text).y + igGetStyle().itemSpacing.y)
+    igBeginGroup()
+    igTextWrapped(cstring text)
+
+    if igIsItemHovered():
+      igSetTooltip("Right click to copy full error")
+
+    if igBeginPopupContextItem("menu"):
+      if igMenuItem("Copy"):
+        igSetClipboardText(cstring errorMsg.get())
+      igEndPopup()
+
+    if igButton("Retry") and not app.downloader.running("packages"):
+      app.downloader.downloadAgain("packages")
+    igEndGroup()
+
 proc drawMain(app: var App) = # Draw the main window
   let viewport = igGetMainViewport()  
   
@@ -121,7 +322,7 @@ proc drawMain(app: var App) = # Draw the main window
 
   if igBegin(cstring app.config["name"].getString(), flags = makeFlags(ImGuiWindowFlags.NoResize, NoDecoration, NoMove)):
     igText(FA_Info & " Application average %.3f ms/frame (%.1f FPS)", 1000f / igGetIO().framerate, igGetIO().framerate)
-    if igButton("Click me"): echo "Do not do that again"
+    app.drawPkgs()
 
   igEnd()
 
@@ -204,9 +405,14 @@ proc initPrefs(app: var App) =
   )
 
 proc initApp(config: TomlValueRef): App = 
-  result = App(config: config, cache: newTTable())
+  result = App(
+    config: config, cache: newTTable(), 
+    tagsBuffer: newString(64), searchBuffer: newString(64), 
+  )
   result.initPrefs()
   result.initSettings(result.config["settings"])
+
+  result.downloader = initDownloader(result.getCacheDir())
 
 proc terminate(app: var App) = 
   var x, y, width, height: int32
@@ -253,6 +459,9 @@ proc main() =
   var ranges = [FA_Min.uint16,  FA_Max.uint16]
 
   io.fonts.igAddFontFromMemoryTTF(app.config["iconFontPath"].getData(), app.config["fontSize"].getFloat(), config.addr, ranges[0].addr)
+
+  app.strongFont = io.fonts.igAddFontFromMemoryTTF(app.config["strongFontPath"].getData(), app.config["fontSize"].getFloat() + 2)
+  io.fonts.igAddFontFromMemoryTTF(app.config["iconFontPath"].getData(), app.config["fontSize"].getFloat() + 2, config.addr, ranges[0].addr)
 
   # Main loop
   while not app.win.windowShouldClose:

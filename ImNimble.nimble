@@ -1,8 +1,8 @@
 # Package
 
-version          = "0.4.0"
+version          = "0.1.0"
 author           = "Patitotective"
-description      = "A new awesome Dear ImGui application"
+description      = "A Dear ImGui Nimble client"
 license          = "MIT"
 namedBin["main"] = "ImExample"
 backend          = "cpp"
@@ -13,9 +13,11 @@ requires "nim >= 1.6.2"
 requires "nake >= 1.9.4"
 requires "nimgl >= 1.3.2"
 requires "chroma >= 0.2.4"
+requires "downit >= 0.1.1"
 requires "imstyle >= 0.3.2"
 requires "niprefs >= 0.3.4"
 requires "stb_image >= 2.5"
+requires "openurl >= 2.0.1"
 
 import std/[strformat, os]
 

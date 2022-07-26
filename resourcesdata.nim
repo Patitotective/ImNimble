@@ -9,6 +9,7 @@ const resourcesPaths = [
   config["iconPath"].getString(), 
   config["stylePath"].getString(), 
   config["fontPath"].getString(), 
+  config["strongFontPath"].getString(), 
   config["iconFontPath"].getString()
 ]
 

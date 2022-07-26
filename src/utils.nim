@@ -1,8 +1,12 @@
-import std/[strutils, strformat, typetraits, enumutils, macros, times, os]
+import std/[strutils, strformat, typetraits, enumutils, macros, times, math, os]
 import chroma
+import downit
 import niprefs
+import openurl
 import stb_image/read as stbi
 import nimgl/[imgui, glfw, opengl]
+
+import icons
 
 export enumutils
 
@@ -22,12 +26,26 @@ type
 
   ImageData* = tuple[image: seq[byte], width, height: int]
 
+  Package* = object
+    name*, url*, description*, license*: string
+    tags*: seq[string]
+    web*, doc*: Option[string]
+
   App* = object
     win*: GLFWWindow
-    font*: ptr ImFont
+    font*, strongFont*: ptr ImFont
     prefs*: Prefs
     cache*: TomlValueRef # Settings cache
     config*: TomlValueRef # Prefs table
+    downloader*: Downloader
+
+    feed*: seq[Package]
+    currentSort*: int
+    prevAvail*: ImVec2
+    currentPkg*: Package
+    tagsBuffer*, searchBuffer*: string
+    listSplitterSize*: tuple[a, b: float32]
+    tags*, pkgsTags*, installedPkgs*: seq[string]
 
 proc `+`*(vec1, vec2: ImVec2): ImVec2 = 
   ImVec2(x: vec1.x + vec2.x, y: vec1.y + vec2.y)
@@ -81,14 +99,29 @@ proc igHSV*(h, s, v: float32, a: float32 = 1f): ImColor =
 proc igGetContentRegionAvail*(): ImVec2 = 
   igGetContentRegionAvailNonUDT(result.addr)
 
+proc igGetWindowContentRegionMax*(): ImVec2 = 
+  igGetWindowContentRegionMaxNonUDT(result.addr)
+
 proc igGetWindowPos*(): ImVec2 = 
   igGetWindowPosNonUDT(result.addr)
+
+proc igGetItemRectMax*(): ImVec2 = 
+  igGetItemRectMaxNonUDT(result.addr)
+
+proc igGetItemRectMin*(): ImVec2 = 
+  igGetItemRectMinNonUDT(result.addr)
+
+proc igGetItemRectSize*(): ImVec2 = 
+  igGetItemRectSizeNonUDT(result.addr)
 
 proc igCalcTextSize*(text: cstring, text_end: cstring = nil, hide_text_after_double_hash: bool = false, wrap_width: float32 = -1.0'f32): ImVec2 = 
   igCalcTextSizeNonUDT(result.addr, text, text_end, hide_text_after_double_hash, wrap_width)
 
 proc igCalcFrameSize*(text: string): ImVec2 = 
   igCalcTextSize(cstring text) + (igGetStyle().framePadding * 2)
+
+proc igCalcItemSize*(size: ImVec2, default_w: float32, default_h: float32): ImVec2 = 
+  igCalcItemSizeNonUDT(result.addr, size, default_w, default_h)
 
 proc igColorConvertU32ToFloat4*(color: uint32): ImVec4 = 
   igColorConvertU32ToFloat4NonUDT(result.addr, color)
@@ -135,6 +168,95 @@ proc igAddFontFromMemoryTTF*(self: ptr ImFontAtlas, data: string, size_pixels: f
   let igFontStr = cast[cstring](igMemAlloc(data.len.uint))
   igFontStr[0].unsafeAddr.copyMem(data[0].unsafeAddr, data.len)
   result = self.addFontFromMemoryTTF(igFontStr, data.len.int32, sizePixels, font_cfg, glyph_ranges)
+
+proc igSplitter*(split_vertically: bool, thickness: float32, size1, size2: ptr float32, min_size1, min_size2: float32, splitter_long_axis_size = -1f): bool {.discardable.} = 
+  let context = igGetCurrentContext()
+  let window = context.currentWindow
+  let id = window.getID("##Splitter")
+  var bb: ImRect
+  bb.min = window.dc.cursorPos + (if split_vertically: igVec2(size1[], 0f) else: igVec2(0f, size1[]))
+  bb.max = bb.min + igCalcItemSize(if split_vertically: igVec2(thickness, splitter_long_axis_size) else: igVec2(splitter_long_axis_size, thickness), 0f, 0f)
+  result = igSplitterBehavior(bb, id, if split_vertically: ImGuiAxis.X else: ImGuiAxis.Y, size1, size2, min_size1, min_size2, 0f)
+
+proc igSpinner*(label: string, radius: float, thickness: float32, color: uint32) = 
+  let window = igGetCurrentWindow()
+  if window.skipItems:
+    return
+  
+  let
+    context = igGetCurrentContext()
+    style = context.style
+    id = igGetID(label)
+  
+    pos = window.dc.cursorPos
+    size = ImVec2(x: radius * 2, y: (radius + style.framePadding.y) * 2)
+
+    bb = ImRect(min: pos, max: ImVec2(x: pos.x + size.x, y: pos.y + size.y));
+  igItemSize(bb, style.framePadding.y)
+
+  if not igItemAdd(bb, id):
+      return
+  
+  window.drawList.pathClear()
+  
+  let
+    numSegments = 30
+    start = abs(sin(context.time * 1.8f) * (numSegments - 5).float)
+  
+  let
+    aMin = PI * 2f * start / numSegments.float
+    aMax = PI * 2f * ((numSegments - 3) / numSegments).float
+
+    centre = ImVec2(x: pos.x + radius, y: pos.y + radius + style.framePadding.y)
+
+  for i in 0..<numSegments:
+    let a = aMin + i / numSegments * (aMax - aMin)
+    window.drawList.pathLineTo(ImVec2(x: centre.x + cos(a + context.time * 8) * radius, y: centre.y + sin(a + context.time * 8) * radius))
+
+  window.drawList.pathStroke(color, thickness = thickness)
+
+proc igTextWithEllipsis*(text: string, maxWidth: float32 = igGetContentRegionAvail().x, ellipsisText: string = "...") = 
+  var text = text
+  var width = igCalcTextSize(cstring text).x
+  let ellipsisWidth = igCalcTextSize(cstring ellipsisText).x
+
+  if width > maxWidth:
+    while width + ellipsisWidth > maxWidth and text.len > ellipsisText.len:
+      text = text[0..^ellipsisText.len]
+      width = igCalcTextSize(cstring text).x
+
+    igText(cstring text & ellipsisText)
+  else:
+    igText(cstring text)
+
+proc igAddUnderLine*(col: uint32) = 
+  var min = igGetItemRectMin()
+  let max = igGetItemRectMax()
+
+  min.y = max.y
+  igGetWindowDrawList().addLine(min, max, col, 1f)
+
+proc igClickableText*(text: string, sameLineBefore, sameLineAfter = true): bool = 
+  if sameLineBefore: igSameLine(0, 0)
+
+  igPushStyleColor(ImGuiCol.Text, parseHtmlColor("#4296F9").igVec4())
+  igText(cstring text)
+  igPopStyleColor()
+
+  if igIsItemHovered():
+    if igIsMouseClicked(ImGuiMouseButton.Left):
+      result = true
+
+    igAddUnderLine(parseHtmlColor("#4296F9").igVec4().igColorConvertFloat4ToU32())
+
+  if sameLineAfter: igSameLine(0, 0)
+
+proc igUrlText*(url: string, text = "", sameLineBefore, sameLineAfter = true) = 
+  if igClickableText(if text.len > 0: text else: url, sameLineBefore, sameLineAfter):
+    url.openUrl()
+
+  if igIsItemHovered():
+    igSetTooltip(cstring url & " " & FA_ExternalLink)
 
 # To be able to print large holey enums
 macro enumFullRange*(a: typed): untyped =
@@ -238,14 +360,6 @@ proc loadTextureFromData*(data: var ImageData, outTexture: var GLuint) =
 
     glTexImage2D(GL_TEXTURE_2D, GLint 0, GL_RGBA.GLint, GLsizei data.width, GLsizei data.height, GLint 0, GL_RGBA, GL_UNSIGNED_BYTE, data.image[0].addr)
 
-proc openURL*(url: string) = 
-  when defined(MacOS) or defined(MacOSX):
-    discard execShellCmd("open " & url)
-  elif defined(Windows):
-    discard execShellCmd("start " & url)
-  else:
-    discard execShellCmd("xdg-open " & url)
-
 proc removeInside*(text: string, open, close: char): tuple[text: string, inside: string] = 
   ## Remove the characters inside open..close from text, return text and the removed characters
   runnableExamples:
@@ -305,3 +419,6 @@ proc cleanString*(str: string): string =
 proc updatePrefs*(app: var App) = 
   # Update the values depending on the preferences here
   echo "Updating preferences..."
+
+proc passFilter*(buffer: string, str: string): bool = 
+  buffer.cleanString().toLowerAscii() in str.toLowerAscii()
