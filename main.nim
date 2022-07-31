@@ -1,4 +1,4 @@
-import std/[algorithm, strformat, sequtils, strutils, random, json, os]
+import std/[algorithm, strformat, sequtils, strutils, random, streams, osproc, json, math, os]
 
 import downit
 import imstyle
@@ -113,26 +113,53 @@ proc drawMainMenuBar(app: var App) =
   app.drawAboutModal()
   app.drawPrefsModal()
 
-proc getFeed(app: App, tags = @["installed"] & app.pkgsTags): seq[Package] = 
-  result = app.feed
+proc updateFeed(app: var App, tags = @["installed"] & app.pkgsTags) = 
+  app.niceFeed = app.feed
+
   # Filter feed
   # By tags/installed
   if app.tags.len > 0:
     for tag in app.tags:
       if tag in tags:
-        result = result.filterIt(tag in it.tags)
+        app.niceFeed = app.niceFeed.filterIt(tag in it.tags)
       elif tag == "installed":
-        result = result.filterIt(it.name in app.installedPkgs)
+        app.niceFeed = app.niceFeed.filterIt(it.name in app.installedPkgs)
       else: raise newException(ValueError, &"Invalid tag {tag}")
   
   # Sort feed
   case app.currentSort
   of 0: # Alpha asc
-    result = result.sortedByIt(it.name)
+    app.niceFeed = app.niceFeed.sortedByIt(it.name)
   of 1: # Alpha desc
-    result = result.sortedByIt(it.name)
-    result.reverse()
+    app.niceFeed = app.niceFeed.sortedByIt(it.name)
+    app.niceFeed.reverse()
   else: raise newException(ValueError, "Invalid sort value " & $app.currentSort)
+
+  app.feedSlice = clamp(app.feedSlice.a, 0, app.niceFeed.high)..clamp(app.feedSlice.b, 0, app.niceFeed.high)
+
+proc checkProcess(app: var App) = 
+  if not app.process.isNil:
+    if app.process.running and not app.outputStream.isNil:
+      var tmp: string
+      if app.outputStream.readLine(tmp):
+        app.log.addLine(tmp)
+    else:
+      app.process.close()
+
+proc installPkg(app: var App, pkg: string) = 
+  if not app.process.isNil and app.process.running:
+    return
+
+  app.process = startProcess(app.prefs["nimbleCmd"].getString(), getHomeDir(), ["install", pkg, "-y"], options = {poStdErrToStdOut, poUsePath})
+  app.outputStream = app.process.outputStream()
+  app.log.addLine(&"$ {app.prefs[\"nimbleCmd\"]} install {pkg} -y")
+
+proc removePkg(app: var App, pkg: string) = 
+  if app.process.isNil or app.process.running:
+    return
+
+  app.process = startProcess(app.prefs["nimbleCmd"].getString(), getHomeDir(), ["remove", pkg, "-y"], options = {poStdErrToStdOut, poUsePath})
+  app.outputStream = app.process.outputStream()
 
 proc drawTags(app: var App, tags: seq[string], addBtnRight = false): bool {.discardable.} = 
   let style = igGetStyle()
@@ -172,7 +199,7 @@ proc drawTags(app: var App, tags: seq[string], addBtnRight = false): bool {.disc
     let lastButton = igGetItemRectMax().x
     # Expected position if next button was on same line
     let nextButton = lastButton + 0.5 + 
-      (if e < app.tags.high: igCalcFrameSize(app.tags[e+1].capitalizeAscii()).x + style.itemSpacing.x + igCalcFrameSize(FA_Times).x + 
+      (if e < app.tags.high: igCalcFrameSize(app.tags[e + 1].capitalizeAscii()).x + style.itemSpacing.x + igCalcFrameSize(FA_Times).x + 
       (if addBtnRight: igCalcFrameSize(FA_Plus).x + style.itemSpacing.x else: 0) 
       else: 0)
     
@@ -189,43 +216,52 @@ proc drawTags(app: var App, tags: seq[string], addBtnRight = false): bool {.disc
   if igBeginPopup("addFilter"):
     igInputTextWithHint("##tagsFilter", "Search tags", cstring app.tagsBuffer, 64)
 
-    for e, tag in tags:
-      if tag notin app.tags and app.tagsBuffer.passFilter(tag):
-        if igMenuItem(cstring tag.capitalizeAscii()):
+    if igBeginChild("##tagsList", size = igVec2(0, 300), flags = NoBackground):
+      for e, tag in tags:
+        if tag notin app.tags and app.tagsBuffer.passFilter(tag) and igMenuItem(cstring tag.capitalizeAscii()):
           result = true
           app.tags.add(tag)
+
+    igEndChild()
 
     igEndPopup()
 
 proc drawPkgsListHeader(app: var App) = 
+  let style = igGetStyle()
+
+  igSetNextItemWidth(igGetContentRegionAvail().x - (style.itemSpacing.x * 2) - igCalcFrameSize(FA_Sort).x - igCalcFrameSize(FA_Plus).x - style.framePadding.x)
   igInputTextWithHint("##search", "Search...", cstring app.searchBuffer, 64); igSameLine()
 
   if igButton(FA_Sort):
     igOpenPopup("sort")
   igSameLine()
 
-  app.drawTags(@["installed"] & app.pkgsTags)
+  if app.drawTags(@["installed"] & app.pkgsTags):
+    app.updateFeed()
 
   if igBeginPopup("sort"):
     for e, ele in [FA_SortAlphaAsc, FA_SortAlphaDesc, "Newest", "Oldest"]:
       if igSelectable(cstring ele, e == app.currentSort):
         app.currentSort = e
+        app.updateFeed()
 
     igEndPopup()
 
 proc drawPkgsList(app: var App) = 
   let style = igGetStyle()
-  let feed = app.feed[0..10]##app.getFeed()[0..100]
 
-  for e, pkg in feed:
-    if not app.searchBuffer.passFilter(pkg.name) or not igIsRectVisible(igVec2(0, igGetFrameHeight() + app.strongFont.fontSize + (style.framePadding.y * 2))):
+  if app.niceFeed.len == 0:
+    return
+
+  for e, pkg in app.niceFeed[app.feedSlice]:
+    if not app.searchBuffer.passFilter(pkg.name):
       continue
 
     let installed = pkg.name in app.installedPkgs
-    let installText = if installed: FA_Download else: FA_Times
+    let installText = if installed: FA_Times else: FA_Download
     let selected = pkg.name == app.currentPkg.name
     if igSelectable(cstring &"##{e}", selected, size = igVec2(0, igGetFrameHeight() + app.strongFont.fontSize + (style.framePadding.y * 2)), flags = ImGuiSelectableFlags.AllowItemOverlap):
-      app.currentPkg = feed[e]
+      app.currentPkg = pkg
 
     igSameLine(); igBeginGroup()
     app.strongFont.igPushFont()
@@ -234,20 +270,91 @@ proc drawPkgsList(app: var App) =
     
     igTextWithEllipsis(
       if pkg.description.len > 0: pkg.description else: "No description.", 
-      maxWidth = igGetContentRegionAvail().x - (style.itemSpacing.x + igCalcFrameSize(installText).x)
+      maxWidth = igGetContentRegionAvail().x - style.itemSpacing.x - igCalcFrameSize(installText).x
     )
     igSameLine(); igCenterCursorX(igCalcFrameSize(installText).x, align = 1)
     
     if igButton(cstring &"{installText}##{e}"):
       if installed:
-        app.installedPkgs.delete(app.installedPkgs.find(pkg.name))
+        app.removePkg(pkg.name)
       else:
-        app.installedPkgs.add(pkg.name)
+        app.installPkg(pkg.name)
 
     igEndGroup()
 
+proc drawLeftPanel(app: var App) = 
+  if igBeginChild("##leftPanel", igVec2(app.splitterSize.a, 0)):
+    app.drawPkgsListHeader(); igSeparator()
+
+    if igBeginChild("##pkgsList", flags = makeFlags(NoBackground, AlwaysUseWindowPadding)):
+      if igGetScrollY() == 0 and app.feedSlice.a > 0:
+        app.feedSlice = max(0, app.feedSlice.a - 50)..app.feedSlice.a
+        igSetScrollY(igGetScrollMaxY() - 1)
+      elif igGetScrollY() == igGetScrollMaxY() and app.feedSlice.b < app.niceFeed.high:
+        app.feedSlice = app.feedSlice.b..min(app.niceFeed.high, app.feedSlice.b + 50)
+        igSetScrollY(1)
+
+      app.drawPkgsList()
+
+    igEndChild()
+
+  igEndChild()
+
+proc drawPreviewTags(app: var App) = 
+  let style = igGetStyle()
+
+  igPushStyleVar(FrameRounding, 0f)
+  igPushStyleColor(ImGuiCol.Button, igGetColorU32(ImGuiCol.Tab))
+  igPushStyleColor(ImGuiCol.ButtonHovered, igGetColorU32(ImGuiCol.TabHovered))
+  igPushStyleColor(ImGuiCol.ButtonActive, igGetColorU32(ImGuiCol.TabActive))
+
+  let tagsWidth = 
+    app.currentPkg.tags.mapIt(igCalcTextSize(cstring it.capitalizeAscii()).x).sum() + 
+    (style.framePadding.x * float32(app.currentPkg.tags.len * 2)) + 
+    (style.itemSpacing.x * float32 app.currentPkg.tags.len-1)
+
+  igCenterCursorX(tagsWidth, align = 1)
+  for e, tag in app.currentPkg.tags:
+    if igButton(cstring tag.capitalizeAscii()) and tag notin app.tags:
+      app.tags.add tag
+      app.updateFeed()
+    
+    if e < app.currentPkg.tags.len-1:
+      igSameLine()
+
+  igPopStyleColor(3)
+  igPopStyleVar()
+
+proc drawRightPanel(app: var App) = 
+  igPushStyleVar(WindowPadding, igVec2(150, 20))
+
+  if igBeginChild("##rightPanel", flags = AlwaysUseWindowPadding):
+    let pkg = app.currentPkg
+
+    app.strongFont.igPushFont()
+    igText(cstring pkg.name)
+    igPopFont()
+
+    igTextWrapped(cstring(if pkg.description.len > 0: pkg.description else: "No description provided."))
+
+    if igButton("Install"):
+      app.installPkg(pkg.name)
+
+    if pkg.tags.len > 0:
+      igSameLine()  
+      app.drawPreviewTags()
+
+    igDummy(igVec2(0, 100))
+
+    igSetNextItemWidth(igGetContentRegionAvail().x)
+    igInputTextMultiline("##log", cstring app.log, uint app.log.len, flags = ImGuiInputTextFlags.ReadOnly)
+
+  igEndChild()
+  igPopStyleVar()
+
 proc drawPkgs(app: var App) = 
   app.downloader.update()
+  app.checkProcess()
 
   if not app.downloader.exists("packages"):
     app.downloader.request("https://github.com/nim-lang/packages/blob/master/packages.json?raw=true", "packages")
@@ -256,37 +363,36 @@ proc drawPkgs(app: var App) =
       if "alias" in pkg: continue
       
       for tag in pkg["tags"]:
-        if tag.getStr() notin app.pkgsTags:
+        if tag.getStr() notin app.pkgsTags and tag.getStr().len != 0:
           app.pkgsTags.add(tag.getStr())
 
       app.feed.add(pkg.to(Package))
 
-    randomize()
-    app.currentPkg = app.feed[rand(app.feed.high)]
+    app.pkgsTags.sort()
+    app.updateFeed()
 
+    randomize()
+    app.currentPkg = app.niceFeed[rand(app.feed.high)]
+
+  let style = igGetStyle()
   let avail = igGetContentRegionAvail()
 
   # Keep splitter proportions on resize
   # And hide the editing zone when not editing
   if app.prevAvail != igVec2(0, 0) and app.prevAvail != avail:
-    app.listSplitterSize = ((app.listSplitterSize.a / app.prevAvail.x) * avail.x, (app.listSplitterSize.b / app.prevAvail.x) * avail.x)
+    app.splitterSize = ((app.splitterSize.a / app.prevAvail.x) * avail.x, (app.splitterSize.b / app.prevAvail.x) * avail.x)
 
   app.prevAvail = avail
 
   # First time
-  if app.listSplitterSize.a == 0:
-    app.listSplitterSize = (avail.x * 0.2f, avail.x * 0.8f)
+  if app.splitterSize.a == 0:
+    app.splitterSize = (avail.x * 0.2f, avail.x * 0.8f)
 
   if app.downloader.succeed("packages"):
-    igSplitter(true, 8, app.listSplitterSize.a.addr, app.listSplitterSize.b.addr, 200, 800, avail.y)
-    # List
-    if igBeginChild("##pkgsList", igVec2(app.listSplitterSize.a, avail.y), flags = makeFlags(AlwaysUseWindowPadding)):
-      app.drawPkgsListHeader()
-      igSeparator()
-      app.drawPkgsList()
-
-    igEndChild(); igSameLine()
-    # app.drawPkgPreview()
+    igSplitter(true, 8, app.splitterSize.a.addr, app.splitterSize.b.addr, 200, 800, avail.y)
+    app.drawLeftPanel()
+    igSameLine()
+    app.drawRightPanel()
 
   elif app.downloader.running("packages"):
     igCenterCursor(ImVec2(x: 15 * 2, y: (15 + igGetStyle().framePadding.y) * 2))
@@ -412,7 +518,7 @@ proc initApp(config: TomlValueRef): App =
   result.initPrefs()
   result.initSettings(result.config["settings"])
 
-  result.downloader = initDownloader(result.getCacheDir())
+  result.downloader = initDownloader(result.getCacheDir(), 1)
 
 proc terminate(app: var App) = 
   var x, y, width, height: int32

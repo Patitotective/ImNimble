@@ -18,79 +18,18 @@ strongFontPath = "assets/Karla-Bold.ttf"
 fontSize = 16.0
 
 # Window
-minSize = [200, 200] # Width, height
+minSize = [600, 400] # Width, height
 
 # Settings for the preferences window
-[settings.input]
+[settings.nimbleCmd]
+display = "Nimble command"
 type = "input"
-default = "Hello World"
+default = "nimble"
 max = 100
 flags = "None" # See https://nimgl.dev/docs/imgui.html#ImGuiInputTextFlags
-help = "Help message"
-[settings.hintInput]
-display = "Input with hint"
-hint = "type something"
-type = "input"
-default = ""
-max = 100
-flags = "None" # See https://nimgl.dev/docs/imgui.html#ImGuiInputTextFlags
-help = "Help message"
-[settings.checkbox]
+help = "Command to call Nimble with"
+[settings.autoScroll]
+display = "Auto scroll"
 type = "check"
 default = true
-[settings.combo]
-type = "combo"
-default = 2 # Or "c"
-items = ["a", "b", "c"]
-flags = "None" # See https://nimgl.dev/docs/imgui.html#ImGuiComboFlags
-[settings.radio]
-type = "radio"
-default = "b" # Or 1
-items = ["a", "b", "c"]
-[settings.numbers]
-display = "Spinners and sliders"
-type = "section"
-flags = "None" # See https://nimgl.dev/docs/imgui.html#ImGuiTreeNodeFlags
-[settings.numbers.content.slider]
-type = "slider"
-default = 4
-min = 0
-max = 9
-format = "%d"
-flags = "None" # See https://nimgl.dev/docs/imgui.html#ImGuiSliderFlags
-[settings.numbers.content.floatSider]
-display = "Float slider"
-type = "fslider" # For floats
-default = 2.5
-min = 0.0
-max = 5.0
-format = "%.1f"
-flags = "None" # See https://nimgl.dev/docs/imgui.html#ImGuiSliderFlags
-[settings.numbers.content.spin]
-type = "spin" # Input int
-default = 5
-step = 1
-step_fast = 10
-flags = "None" # See https://nimgl.dev/docs/imgui.html#ImGuiInputTextFlags
-[settings.numbers.content.floatSpin]
-display = "Float spin"
-type = "fspin" # Input float
-default = 5.0
-step = 1.0
-step_fast = 10.0
-format = "%.1f"
-flags = "None" # See https://nimgl.dev/docs/imgui.html#ImGuiInputTextFlags
-[settings.colors]
-display = "Color pickers"
-type = "section"
-flags = "None" # See https://nimgl.dev/docs/imgui.html#ImGuiTreeNodeFlags
-[settings.colors.content.color]
-display = "RGB color"
-type = "color3" # RGB
-default = "#000000" # Or [0, 0, 0] or rgb(0, 0, 0) or black
-flags = "None" # See https://nimgl.dev/docs/imgui.html#ImGuiColorEditFlags
-[settings.colors.content.alphaColor]
-display = "RGBA color"
-type = "color4" # RGBA
-default  =  "rgba(17, 209, 194, 0.64)" # Or [0.06666667014360428, 0.8196078538894653, 0.7607843279838562, 0.6392157077789307]
-flags = "None" # See https://nimgl.dev/docs/imgui.html#ImGuiColorEditFlags
+help = "Scroll to bottom whenever a command is added to the console"

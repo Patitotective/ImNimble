@@ -13,11 +13,11 @@ requires "nim >= 1.6.2"
 requires "nake >= 1.9.4"
 requires "nimgl >= 1.3.2"
 requires "chroma >= 0.2.4"
-requires "downit >= 0.1.1"
-requires "imstyle >= 0.3.2"
-requires "niprefs >= 0.3.4"
 requires "stb_image >= 2.5"
 requires "openurl >= 2.0.1"
+requires "downit >= 0.2.1 & < 0.3.0"
+requires "imstyle >= 0.3.4 & < 0.4.0"
+requires "niprefs >= 0.3.4 & < 0.4.0"
 
 import std/[strformat, os]
 

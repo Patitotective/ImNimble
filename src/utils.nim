@@ -1,10 +1,10 @@
-import std/[strutils, strformat, typetraits, enumutils, macros, times, math, os]
+import std/[strutils, strformat, typetraits, enumutils, streams, macros, osproc, times, math, os]
 import chroma
 import downit
 import niprefs
 import openurl
 import stb_image/read as stbi
-import nimgl/[imgui, glfw, opengl]
+import nimgl/[opengl, imgui, glfw]
 
 import icons
 
@@ -39,12 +39,17 @@ type
     config*: TomlValueRef # Prefs table
     downloader*: Downloader
 
+    log*: string
+    process*: Process
+    outputStream*: Stream
     feed*: seq[Package]
+    niceFeed*: seq[Package] # Sorted and filtered
+    feedSlice*: Slice[int] # Slice to show
     currentSort*: int
     prevAvail*: ImVec2
     currentPkg*: Package
     tagsBuffer*, searchBuffer*: string
-    listSplitterSize*: tuple[a, b: float32]
+    splitterSize*: tuple[a, b: float32]
     tags*, pkgsTags*, installedPkgs*: seq[string]
 
 proc `+`*(vec1, vec2: ImVec2): ImVec2 = 
@@ -422,3 +427,6 @@ proc updatePrefs*(app: var App) =
 
 proc passFilter*(buffer: string, str: string): bool = 
   buffer.cleanString().toLowerAscii() in str.toLowerAscii()
+
+proc addLine*(s: var string, val: string) = 
+  s.add(val & "\n")
