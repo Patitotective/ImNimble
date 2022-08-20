@@ -1,4 +1,4 @@
-import std/[strutils, strformat, typetraits, enumutils, streams, macros, osproc, times, math, os]
+import std/[typetraits, strformat, enumutils, strbasics, strutils, macros, times, math, os]
 import chroma
 import downit
 import niprefs
@@ -29,28 +29,38 @@ type
   Package* = object
     name*, url*, description*, license*: string
     tags*: seq[string]
-    web*, doc*: Option[string]
+    web*, doc*, alias*: Option[string]
 
   App* = object
     win*: GLFWWindow
-    font*, strongFont*: ptr ImFont
+    font*, strongFont*, monoFont*: ptr ImFont
     prefs*: Prefs
     cache*: TomlValueRef # Settings cache
     config*: TomlValueRef # Prefs table
+    lastClipboard*: string
     downloader*: Downloader
 
+    offline*: bool # Browse pre-downloaded packages list
+    nimbleNotInstalled*: bool
+
     log*: string
-    process*: Process
-    outputStream*: Stream
+    running*: bool # Is there a process running?
+    scrollToBottom*: bool # Scroll to console's bottom
+
     feed*: seq[Package]
-    niceFeed*: seq[Package] # Sorted and filtered
+    taggedFeed*: seq[Package] # feed filtered by tags
+    searchFeed*: seq[Package] # taggedFeed filtered by searchBuffer
     feedSlice*: Slice[int] # Slice to show
-    currentSort*: int
+    aliases*: Table[string, string]
+
     prevAvail*: ImVec2
+    splitterSize*: tuple[a, b: float32]
+
+    currentSort*: int
     currentPkg*: Package
     tagsBuffer*, searchBuffer*: string
-    splitterSize*: tuple[a, b: float32]
     tags*, pkgsTags*, installedPkgs*: seq[string]
+    tagsHovered*: bool # Boolean to set IO key mod shift to false when preview tags are not hovered
 
 proc `+`*(vec1, vec2: ImVec2): ImVec2 = 
   ImVec2(x: vec1.x + vec2.x, y: vec1.y + vec2.y)
@@ -428,5 +438,12 @@ proc updatePrefs*(app: var App) =
 proc passFilter*(buffer: string, str: string): bool = 
   buffer.cleanString().toLowerAscii() in str.toLowerAscii()
 
-proc addLine*(s: var string, val: string) = 
-  s.add(val & "\n")
+proc addLine*(s: var string, val: openArray[char]) = 
+  s.add(val)
+  s.add('\n')
+
+template lastLine*(str: string): openArray[char] = 
+  if (let idx = str.rFind("\n"); idx) > 0:
+    str.toOpenArray(idx, str.len)
+  else:
+    str

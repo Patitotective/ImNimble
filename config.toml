@@ -3,7 +3,7 @@ name = "ImNimble"
 comment = "ImNimble is a simple Dear ImGui application example"
 version = "0.4.0"
 website = "https://github.com/Patitotective/ImNimble"
-authors = ["Patitotective <https://github.com/Patitotective>", "Cristobal <mailto:cristobalriaga@gmail.com>", "Omar Cornut <https://github.com/ocornut>", "Beef, Yard, Rika",  "and the Nim community :]", "Inu147"]
+authors = ["Patitotective <https://github.com/Patitotective>"]
 categories = ["Utility"]
 
 # AppImage
@@ -15,6 +15,7 @@ svgIconPath = "assets/icon.svg"
 iconFontPath = "assets/forkawesome-webfont.ttf"
 fontPath = "assets/Karla-Regular.ttf"
 strongFontPath = "assets/Karla-Bold.ttf"
+monoFontPath = "assets/UbuntuMono-Regular.ttf" #"assets/ProggyVector Regular.ttf"
 fontSize = 16.0
 
 # Window
